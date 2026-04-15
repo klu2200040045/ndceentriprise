@@ -94,110 +94,110 @@ jobs:
           }
           Write-Host "XFS Simulator installed (exit code: $($proc.ExitCode))"
       - name: Install APTRA Advance NDC
-  shell: pwsh
-  run: |
-    Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
+    shell: pwsh
+    run: |
+      Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
 
-    $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
-    $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
-    curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
-      -o "C:\.ansible\Packages\$nupkgFile" $url
+      $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+      $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+      curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+        -o "C:\.ansible\Packages\$nupkgFile" $url
 
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host "ERROR: Download failed"
-      exit 1
-    }
-
-    $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
-    New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-    Expand-Archive "C:\.ansible\Packages\$nupkgFile" $extractPath -Force
-
-    $logFile = "C:\temp\AdvanceNDC-install.log"
-    New-Item -ItemType File -Force -Path $logFile | Out-Null
-
-    Write-Host "=== Starting APTRA Advance NDC installation with live log output ==="
-
-    # Start installer
-    $proc = Start-Process `
-      -FilePath "$extractPath\setup.exe" `
-      -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx `"$logFile`"" `
-      -PassThru
-
-    # Stream log contents LIVE to console
-    Write-Host "=== Streaming installer log output ==="
-    $logPosition = 0
-
-    while (-not $proc.HasExited) {
-      if (Test-Path $logFile) {
-        $length = (Get-Item $logFile).Length
-        if ($length -gt $logPosition) {
-          $fs = New-Object IO.FileStream($logFile, 'Open', 'Read', 'ReadWrite')
-          $fs.Seek($logPosition, 'Begin') | Out-Null
-          $sr = New-Object IO.StreamReader($fs)
-          while (-not $sr.EndOfStream) {
-            $line = $sr.ReadLine()
-            if ($line -and $line.Trim() -ne "") {
-              Write-Host "[APTRA] $line"
-            }
-          }
-          $logPosition = $fs.Position
-          $sr.Close()
-          $fs.Close()
-        }
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Download failed"
+        exit 1
       }
-      Start-Sleep -Seconds 5
-    }
 
-    # Final validation
-    $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
+      $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+      New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+      Expand-Archive "C:\.ansible\Packages\$nupkgFile" $extractPath -Force
 
-    Write-Host "=== APTRA installer completed, dumping last log lines ==="
-    Get-Content $logFile -Tail 50
+      $logFile = "C:\temp\AdvanceNDC-install.log"
+      New-Item -ItemType File -Force -Path $logFile | Out-Null
 
-    if ($proc.ExitCode -notin $validCodes) {
-      Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"
-      exit 1
-    }
+      Write-Host "=== Starting APTRA Advance NDC installation with live log output ==="
 
-    Write-Host "Advance NDC installed successfully (exit code: $($proc.ExitCode))"
+      # Start installer
+      $proc = Start-Process `
+        -FilePath "$extractPath\setup.exe" `
+        -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx `"$logFile`"" `
+        -PassThru
 
-      - name: Apply APTRA Advance NDC Patches
-        if: env.APTRA_ADVANCE_NDC_PATCH_BRANCH != ''
-        shell: pwsh
-        run: |
-          Write-Host "=== Applying APTRA Advance NDC Patches (branch: $env:APTRA_ADVANCE_NDC_PATCH_BRANCH) ==="
-          $ver = $env:APTRA_ADVANCE_NDC_VERSION
-          $branch = $env:APTRA_ADVANCE_NDC_PATCH_BRANCH
-          # Map version to JFrog patch URLs
-          $patchUrls = @{
-            "5.1.0" = @{
-              "customer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0301XX_Custver/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0301XX_Custver/"
-              )
-              "developer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0301XX_DevBranch/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0301XX_DevBranch/"
-              )
+      # Stream log contents LIVE to console
+      Write-Host "=== Streaming installer log output ==="
+      $logPosition = 0
+
+      while (-not $proc.HasExited) {
+        if (Test-Path $logFile) {
+          $length = (Get-Item $logFile).Length
+          if ($length -gt $logPosition) {
+            $fs = New-Object IO.FileStream($logFile, 'Open', 'Read', 'ReadWrite')
+            $fs.Seek($logPosition, 'Begin') | Out-Null
+            $sr = New-Object IO.StreamReader($fs)
+            while (-not $sr.EndOfStream) {
+              $line = $sr.ReadLine()
+              if ($line -and $line.Trim() -ne "") {
+                Write-Host "[APTRA] $line"
+              }
             }
-            "5.2.0" = @{
-              "customer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0302XX_Custver/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0302XX_Custver/"
-              )
-              "developer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0302XX_DevBranch/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0302XX_DevBranch/"
-              )
+            $logPosition = $fs.Position
+            $sr.Close()
+            $fs.Close()
+          }
+        }
+        Start-Sleep -Seconds 5
+      }
+
+      # Final validation
+      $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
+
+      Write-Host "=== APTRA installer completed, dumping last log lines ==="
+      Get-Content $logFile -Tail 50
+
+      if ($proc.ExitCode -notin $validCodes) {
+        Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"
+        exit 1
+      }
+
+      Write-Host "Advance NDC installed successfully (exit code: $($proc.ExitCode))"
+
+        - name: Apply APTRA Advance NDC Patches
+          if: env.APTRA_ADVANCE_NDC_PATCH_BRANCH != ''
+          shell: pwsh
+          run: |
+            Write-Host "=== Applying APTRA Advance NDC Patches (branch: $env:APTRA_ADVANCE_NDC_PATCH_BRANCH) ==="
+            $ver = $env:APTRA_ADVANCE_NDC_VERSION
+            $branch = $env:APTRA_ADVANCE_NDC_PATCH_BRANCH
+            # Map version to JFrog patch URLs
+            $patchUrls = @{
+              "5.1.0" = @{
+                "customer" = @(
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0301XX_Custver/",
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0301XX_Custver/"
+                )
+                "developer" = @(
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0301XX_DevBranch/",
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0301XX_DevBranch/"
+                )
+              }
+              "5.2.0" = @{
+                "customer" = @(
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0302XX_Custver/",
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0302XX_Custver/"
+                )
+                "developer" = @(
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0302XX_DevBranch/",
+                  "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0302XX_DevBranch/"
+                )
+              }
             }
-          }
-          if (-not $patchUrls.ContainsKey($ver)) {
-            Write-Host "ERROR: No patch URLs configured for ANDC version $ver"; exit 1
-          }
-          if (-not $patchUrls[$ver].ContainsKey($branch)) {
-            Write-Host "ERROR: Unknown branch '$branch'. Use 'customer' or 'developer'"; exit 1
-          }
-          $urls = $patchUrls[$ver][$branch]
+            if (-not $patchUrls.ContainsKey($ver)) {
+              Write-Host "ERROR: No patch URLs configured for ANDC version $ver"; exit 1
+            }
+            if (-not $patchUrls[$ver].ContainsKey($branch)) {
+              Write-Host "ERROR: Unknown branch '$branch'. Use 'customer' or 'developer'"; exit 1
+            }
+            $urls = $patchUrls[$ver][$branch]
           New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages\.Net" | Out-Null
           New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages\CPP" | Out-Null
           $patchBase = "C:\.ansible\Advance NDC $ver Patches"
