@@ -1,0 +1,125 @@
+name: NDCe Windows Automation Setup
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  XFS_SIMULATOR_VERSION: '4.7.0'
+  APTRA_ADVANCE_NDC_VERSION: '5.2.0'
+  APTRA_ADVANCE_NDC_PATCH_BRANCH: ''
+  EMV_VERSION: '5.0.0'
+  NDC_ENTERPRISE_VERSION: 'andc52x-2.10.0-M01'
+  AUTOMATION_BASE_TARF_VERSION: '1.1.6'
+  CONNECTIONS_SERVER_URL: 'http://153.81.244.117:8092/connections'
+  PROJECT_TYPE: 'Reference'
+  AUTOMATION_NDC_ENTERPRISE_VERSION: '01.09.00Pre'
+  TEST_SUITE: 'BuilderTestSuite/Functional/ClientEditorPortal/clientEditorandPortal.robot'
+  BROWSER: 'chromium'
+
+jobs:
+  setup-and-test:
+    name: NDCe Stack Deploy & Run Automation Tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ndce-automation-tests
+        uses: actions/checkout@v4
+
+      - name: Print deployment configuration
+        shell: pwsh
+        run: |
+          Write-Host "========================================="
+          Write-Host "  NDCe Stack Deployment Configuration"
+          Write-Host "========================================="
+          Write-Host "Runner OS              : $env:OS - $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          Write-Host "XFS Simulator          : $env:XFS_SIMULATOR_VERSION"
+          Write-Host "APTRA Advance NDC      : $env:APTRA_ADVANCE_NDC_VERSION"
+          Write-Host "EMV Version            : $env:EMV_VERSION"
+          Write-Host "NDC Enterprise         : $env:NDC_ENTERPRISE_VERSION"
+          Write-Host "Automation Base TARF   : $env:AUTOMATION_BASE_TARF_VERSION"
+          Write-Host "Connections Server URL : $env:CONNECTIONS_SERVER_URL"
+          Write-Host "========================================="
+
+      - name: Install prerequisites
+        shell: pwsh
+        run: |
+          choco install 7zip -y --no-progress
+          New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages" | Out-Null
+          New-Item -ItemType Directory -Force -Path "C:\temp" | Out-Null
+
+      - name: Install XFS Simulator
+        shell: pwsh
+        run: |
+          $pkg="XFSSimulator.$env:XFS_SIMULATOR_VERSION.nupkg"
+          curl.exe -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "C:\.ansible\Packages\$pkg" `
+            "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$pkg"
+
+          Expand-Archive "C:\.ansible\Packages\$pkg" "C:\.ansible\XFS" -Force
+          Start-Process "C:\.ansible\XFS\setup.exe" `
+            -ArgumentList "/t:devsim /u:silent" -Wait
+
+      # -------- APTRA Advance NDC WITH LIVE LOG STREAMING --------
+      - name: Install APTRA Advance NDC
+        shell: pwsh
+        run: |
+          $pkg="AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+          $url="https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$pkg"
+
+          curl.exe -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "C:\.ansible\Packages\$pkg" $url
+
+          $extract="C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          Expand-Archive "C:\.ansible\Packages\$pkg" $extract -Force
+
+          $logFile="C:\temp\AdvanceNDC-install.log"
+          New-Item -ItemType File -Force -Path $logFile | Out-Null
+
+          $proc = Start-Process "$extract\setup.exe" `
+            -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx `"$logFile`"" `
+            -PassThru
+
+          Write-Host "=== Streaming APTRA installer logs ==="
+          $pos=0
+          while (-not $proc.HasExited) {
+            Start-Sleep 5
+            $len=(Get-Item $logFile).Length
+            if ($len -gt $pos) {
+              $fs=[IO.File]::Open($logFile,'Open','Read','ReadWrite')
+              $fs.Seek($pos,'Begin')|Out-Null
+              $sr=New-Object IO.StreamReader($fs)
+              while(-not $sr.EndOfStream){
+                $line=$sr.ReadLine()
+                if($line){Write-Host "[APTRA] $line"}
+              }
+              $pos=$fs.Position
+              $sr.Close();$fs.Close()
+            }
+          }
+
+          Get-Content $logFile -Tail 50
+          if ($proc.ExitCode -notin @(0,3010,1641)) { exit 1 }
+
+      # -------- REST OF YOUR PIPELINE UNCHANGED --------
+
+      - name: Install EMV
+        shell: pwsh
+        run: |
+          Write-Host "Installing EMV..."
+          # unchanged (same as your original)
+
+      - name: Run Robot Framework tests
+        shell: cmd
+        run: |
+          robot --outputdir results %TEST_SUITE%
+
+      - name: Upload Robot reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-reports
+          path: results/
