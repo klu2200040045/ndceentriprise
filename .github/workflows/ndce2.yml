@@ -1,0 +1,145 @@
+name: NDCe Windows Automation Setup
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  XFS_SIMULATOR_VERSION: '4.7.0'
+  APTRA_ADVANCE_NDC_VERSION: '5.2.0'
+  APTRA_ADVANCE_NDC_PATCH_BRANCH: ''
+  EMV_VERSION: '5.0.0'
+  NDC_ENTERPRISE_VERSION: 'andc52x-2.10.0-M01'
+  AUTOMATION_BASE_TARF_VERSION: '1.1.6'
+  CONNECTIONS_SERVER_URL: 'http://153.81.244.117:8092/connections'
+  PROJECT_TYPE: 'Reference'
+  AUTOMATION_NDC_ENTERPRISE_VERSION: '01.09.00Pre'
+  TEST_SUITE: 'BuilderTestSuite/Functional/ClientEditorPortal/clientEditorandPortal.robot'
+  BROWSER: 'chromium'
+
+jobs:
+  setup-and-test:
+    name: NDCe Stack Deploy & Run Automation Tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ndce-automation-tests
+        uses: actions/checkout@v4
+        with:
+          repository: ncratleos-swt-banking/ndce-automation-tests
+          ref: master
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      # -----------------------------------------------------------
+      # 0. Install Prerequisites (Chocolatey, VC++, 7zip)
+      # -----------------------------------------------------------
+      - name: Install base prerequisites
+        shell: pwsh
+        run: |
+          choco install 7zip -y --no-progress
+          choco install vcredist2013 vcredist2015 vcredist2017 vcredist2019 -y --no-progress
+          New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages" | Out-Null
+          New-Item -ItemType Directory -Force -Path "C:\temp" | Out-Null
+
+      # -----------------------------------------------------------
+      # 1. Install XFS Simulator (UNCHANGED)
+      # -----------------------------------------------------------
+      - name: Install XFS Simulator
+        shell: pwsh
+        run: |
+          $pkg="XFSSimulator.$env:XFS_SIMULATOR_VERSION.nupkg"
+          curl.exe -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "C:\.ansible\Packages\$pkg" `
+            "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$pkg"
+
+          Expand-Archive "C:\.ansible\Packages\$pkg" "C:\.ansible\XFS" -Force
+          Start-Process "C:\.ansible\XFS\setup.exe" `
+            -ArgumentList "/t:devsim /u:silent REBOOT=ReallySuppress" `
+            -Wait
+
+      # -----------------------------------------------------------
+      # 2. Install APTRA Advance NDC (FIXED)
+      # -----------------------------------------------------------
+      - name: Install APTRA Advance NDC (Hardened & Logged)
+        shell: pwsh
+        run: |
+          Write-Host "Waiting for existing MSI operations..."
+          Start-Sleep -Seconds 60
+          Get-Process msiexec -ErrorAction SilentlyContinue
+
+          $pkg="AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+          curl.exe -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "C:\.ansible\Packages\$pkg" `
+            "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$pkg"
+
+          $extract="C:\.ansible\AdvanceNDC"
+          Expand-Archive "C:\.ansible\Packages\$pkg" $extract -Force
+
+          $proc = Start-Process "$extract\setup.exe" `
+            -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx C:\temp\andc_install.log" `
+            -PassThru
+
+          $timeout = 1800  # 30 minutes
+          $elapsed = 0
+          while (-not $proc.HasExited) {
+            Start-Sleep 60
+            $elapsed += 60
+            Write-Host "APTRA installing... elapsed ${elapsed}s"
+            if ($elapsed -ge $timeout) {
+              Write-Host "APTRA install stuck — dumping log"
+              Get-Content C:\temp\andc_install.log -Tail 200
+              Stop-Process -Id $proc.Id -Force
+              exit 1
+            }
+          }
+
+          if ($proc.ExitCode -notin @(0,3010,1641)) {
+            Write-Host "APTRA failed with exit code $($proc.ExitCode)"
+            Get-Content C:\temp\andc_install.log -Tail 200
+            exit 1
+          }
+
+      # -----------------------------------------------------------
+      # 3. EMV INSTALL (UNCHANGED)
+      # -----------------------------------------------------------
+      - name: Install EMV
+        shell: pwsh
+        run: |
+          $pkg="EMVAdvanceNDC.$env:EMV_VERSION.nupkg"
+          curl.exe -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "C:\.ansible\Packages\$pkg" `
+            "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$pkg"
+
+          $extract="C:\.ansible\EMV"
+          Expand-Archive "C:\.ansible\Packages\$pkg" $extract -Force
+
+          Start-Process msiexec.exe `
+            -ArgumentList "/i `"$extract\EMVExMV.msi`" /qn REBOOT=ReallySuppress /lv C:\temp\emv.log" `
+            -Wait
+
+      # -----------------------------------------------------------
+      # 4. VERIFICATION
+      # -----------------------------------------------------------
+      - name: Verify NDCe Stack
+        shell: pwsh
+        run: |
+          "Advance NDC","connections-agent","TARF" | ForEach-Object {
+            Get-ChildItem "C:\Program Files (x86)\NCR APTRA" -ErrorAction SilentlyContinue
+          }
+
+      # -----------------------------------------------------------
+      # 5. RUN ROBOT TESTS (UNCHANGED)
+      # -----------------------------------------------------------
+      - name: Run Robot Framework tests
+        shell: cmd
+        run: |
+          robot --outputdir results %TEST_SUITE%
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-results
+          path: results/
