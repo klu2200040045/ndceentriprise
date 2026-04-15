@@ -2,8 +2,6 @@ name: NDCe Windows Automation Setup
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
   workflow_dispatch:
 
 env:
@@ -27,11 +25,7 @@ jobs:
     steps:
       - name: Checkout ndce-automation-tests
         uses: actions/checkout@v4
-        with:
-          repository: ncratleos-swt-banking/ndce-automation-tests
-          ref: master
-          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-
+       
       # -----------------------------------------------------------
       # 0. Install Prerequisites (Chocolatey, VC++, 7zip)
       # -----------------------------------------------------------
