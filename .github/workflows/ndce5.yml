@@ -1,6 +1,7 @@
 name: NDCe Windows Automation Setup
  
 on:
+  push:
   workflow_dispatch:
  
 env:
@@ -24,6 +25,7 @@ jobs:
     steps:
       - name: Checkout ndce-automation-tests
         uses: actions/checkout@v4
+ 
       - name: Print deployment configuration
         shell: pwsh
         run: |
@@ -90,81 +92,25 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
-
           $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
           $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
-
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
-            -o "C:\.ansible\Packages\$nupkgFile" $url
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Download failed"
-            exit 1
-          }
-
+          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\$nupkgFile" $url
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Download failed"; exit 1 }
           $fileSize = (Get-Item "C:\.ansible\Packages\$nupkgFile").Length
           if ($fileSize -lt 1024) {
-            Write-Host "ERROR: File too small ($fileSize bytes):"
-            Get-Content "C:\.ansible\Packages\$nupkgFile"
-            exit 1
+            Write-Host "ERROR: File too small ($fileSize bytes):"; Get-Content "C:\.ansible\Packages\$nupkgFile"; exit 1
           }
-
           Write-Host "=== Extracting and installing Advance NDC ==="
           $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
           New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
           Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath $extractPath -Force
-
-          # ---- ADD LOGGING (ONLY ADDITION) ----
-          New-Item -ItemType Directory -Force -Path "C:\temp" | Out-Null
-          $logFile = "C:\temp\AdvanceNDC-install.log"
-          New-Item -ItemType File -Force -Path $logFile | Out-Null
-
-          Write-Host "=== Starting Advance NDC installer (live log enabled) ==="
-
-          $proc = Start-Process `
-            -FilePath "$extractPath\setup.exe" `
-            -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx `"$logFile`"" `
-            -PassThru
-
-          Write-Host "=== Streaming installer log to console ==="
-          $logPosition = 0
-
-          while (-not $proc.HasExited) {
-            if (Test-Path $logFile) {
-              $length = (Get-Item $logFile).Length
-              if ($length -gt $logPosition) {
-                $fs = [System.IO.File]::Open($logFile, 'Open', 'Read', 'ReadWrite')
-                $fs.Seek($logPosition, 'Begin') | Out-Null
-                $sr = New-Object System.IO.StreamReader($fs)
-
-                while (-not $sr.EndOfStream) {
-                  $line = $sr.ReadLine()
-                  if ($line -and $line.Trim() -ne "") {
-                    Write-Host "[APTRA] $line"
-                  }
-                }
-
-                $logPosition = $fs.Position
-                $sr.Close()
-                $fs.Close()
-              }
-            }
-            Start-Sleep -Seconds 5
-          }
-
-          # ---- ORIGINAL VALIDATION (UNCHANGED) ----
+          $proc = Start-Process -FilePath "$extractPath\setup.exe" -ArgumentList "/t:sst /u:silent" -Wait -PassThru
           $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
-
-          Write-Host "=== Advance NDC installer finished ==="
-          Get-Content $logFile -Tail 50
-
           if ($proc.ExitCode -notin $validCodes) {
-            Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"
-            exit 1
+            Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"; exit 1
           }
-
           Write-Host "Advance NDC installed (exit code: $($proc.ExitCode))"
-
+ 
       - name: Apply APTRA Advance NDC Patches
         if: env.APTRA_ADVANCE_NDC_PATCH_BRANCH != ''
         shell: pwsh
@@ -563,4 +509,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: allure-html-report
-          path: results/allure-report
+          path: results/allure-report/
