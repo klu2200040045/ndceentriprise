@@ -53,47 +53,73 @@ jobs:
             -ArgumentList "/t:devsim /u:silent REBOOT=ReallySuppress" `
             -Wait
 
-      # -----------------------------------------------------------
-      # 2. Install APTRA Advance NDC (FIXED)
-      # -----------------------------------------------------------
-      - name: Install APTRA Advance NDC (Hardened & Logged)
-        shell: pwsh
-        run: |
-          Write-Host "Waiting for existing MSI operations..."
-          Start-Sleep -Seconds 60
-          Get-Process msiexec -ErrorAction SilentlyContinue
+     - name: Install APTRA Advance NDC
+  shell: pwsh
+  run: |
+    Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
 
-          $pkg="AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
-          curl.exe -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
-            -o "C:\.ansible\Packages\$pkg" `
-            "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$pkg"
+    $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+    $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+    curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+      -o "C:\.ansible\Packages\$nupkgFile" $url
 
-          $extract="C:\.ansible\AdvanceNDC"
-          Expand-Archive "C:\.ansible\Packages\$pkg" $extract -Force
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "ERROR: Download failed"
+      exit 1
+    }
 
-          $proc = Start-Process "$extract\setup.exe" `
-            -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx C:\temp\andc_install.log" `
-            -PassThru
+    $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+    New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+    Expand-Archive "C:\.ansible\Packages\$nupkgFile" $extractPath -Force
 
-          $timeout = 1800  # 30 minutes
-          $elapsed = 0
-          while (-not $proc.HasExited) {
-            Start-Sleep 60
-            $elapsed += 60
-            Write-Host "APTRA installing... elapsed ${elapsed}s"
-            if ($elapsed -ge $timeout) {
-              Write-Host "APTRA install stuck — dumping log"
-              Get-Content C:\temp\andc_install.log -Tail 200
-              Stop-Process -Id $proc.Id -Force
-              exit 1
+    $logFile = "C:\temp\AdvanceNDC-install.log"
+    New-Item -ItemType File -Force -Path $logFile | Out-Null
+
+    Write-Host "=== Starting APTRA Advance NDC installation with live log output ==="
+
+    # Start installer
+    $proc = Start-Process `
+      -FilePath "$extractPath\setup.exe" `
+      -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /lvx `"$logFile`"" `
+      -PassThru
+
+    # Stream log contents LIVE to console
+    Write-Host "=== Streaming installer log output ==="
+    $logPosition = 0
+
+    while (-not $proc.HasExited) {
+      if (Test-Path $logFile) {
+        $length = (Get-Item $logFile).Length
+        if ($length -gt $logPosition) {
+          $fs = New-Object IO.FileStream($logFile, 'Open', 'Read', 'ReadWrite')
+          $fs.Seek($logPosition, 'Begin') | Out-Null
+          $sr = New-Object IO.StreamReader($fs)
+          while (-not $sr.EndOfStream) {
+            $line = $sr.ReadLine()
+            if ($line -and $line.Trim() -ne "") {
+              Write-Host "[APTRA] $line"
             }
           }
+          $logPosition = $fs.Position
+          $sr.Close()
+          $fs.Close()
+        }
+      }
+      Start-Sleep -Seconds 5
+    }
 
-          if ($proc.ExitCode -notin @(0,3010,1641)) {
-            Write-Host "APTRA failed with exit code $($proc.ExitCode)"
-            Get-Content C:\temp\andc_install.log -Tail 200
-            exit 1
-          }
+    # Final validation
+    $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
+
+    Write-Host "=== APTRA installer completed, dumping last log lines ==="
+    Get-Content $logFile -Tail 50
+
+    if ($proc.ExitCode -notin $validCodes) {
+      Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"
+      exit 1
+    }
+
+    Write-Host "Advance NDC installed successfully (exit code: $($proc.ExitCode))"
 
       # -----------------------------------------------------------
       # 3. EMV INSTALL (UNCHANGED)
