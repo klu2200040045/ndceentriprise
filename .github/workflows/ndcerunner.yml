@@ -69,31 +69,67 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Downloading XFS Simulator $env:XFS_SIMULATOR_VERSION ==="
+          $packageDir = "C:\.ansible\Packages"
+          $installDir = "C:\.ansible\XFS Simulator"
           $nupkgFile = "XFSSimulator.$env:XFS_SIMULATOR_VERSION.nupkg"
           $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\$nupkgFile" $url
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          curl.exe --fail -L `
+            -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "$packageDir\$nupkgFile" `
+            $url
           if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Download failed with exit code $LASTEXITCODE"
             exit 1
           }
-          $fileSize = (Get-Item "C:\.ansible\Packages\$nupkgFile").Length
+          $fileSize = (Get-Item "$packageDir\$nupkgFile").Length
           Write-Host "Downloaded file size: $fileSize bytes"
           if ($fileSize -lt 1024) {
-            Write-Host "ERROR: Downloaded file is too small ($fileSize bytes) — likely an error response:"
-            Get-Content "C:\.ansible\Packages\$nupkgFile"
+            Write-Host "ERROR: Downloaded file is too small — likely an error response"
+            Get-Content "$packageDir\$nupkgFile"
             exit 1
           }
-          Write-Host "=== Extracting nupkg ==="
-          New-Item -ItemType Directory -Force -Path "C:\.ansible\XFS Simulator" | Out-Null
-          Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath "C:\.ansible\XFS Simulator" -Force
+          Write-Host "=== Extracting XFS Simulator ==="
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+          Expand-Archive -Path "$packageDir\$nupkgFile" -DestinationPath $installDir -Force
+          Write-Host "=== Extracted top-level contents (XFS Simulator) ==="
+          Get-ChildItem -Path $installDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
           Write-Host "=== Installing XFS Simulator (setup.exe /t:devsim /u:silent) ==="
-          $proc = Start-Process -FilePath "C:\.ansible\XFS Simulator\setup.exe" -ArgumentList "/t:devsim /u:silent" -Wait -PassThru
+          $proc = Start-Process `
+            -FilePath "$installDir\setup.exe" `
+            -ArgumentList "/t:devsim /u:silent" `
+            -Wait `
+            -PassThru
           $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
           if ($proc.ExitCode -notin $validCodes) {
             Write-Host "ERROR: XFS Simulator install failed with exit code $($proc.ExitCode)"
             exit 1
           }
           Write-Host "XFS Simulator installed (exit code: $($proc.ExitCode))"
+          
+          $installFolder = $simStart.DirectoryName
+           Write-Host "Install folder : $installFolder"
+
+          Write-Host "=== Locating SIMSTART.exe ==="
+          $simStart = Get-ChildItem `
+            -Path "C:\" `
+            -Filter "SIMSTART.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $simStart) {
+            Write-Host "ERROR: SIMSTART.exe not found after installation"
+            exit 1
+          }
+          Write-Host "SIMSTART.exe found:"
+          Write-Host "Path : $($simStart.FullName)"
+          Write-Host "Size : $([Math]::Round($simStart.Length / 1KB, 2)) KB"
+          $versionInfo = (Get-Item $simStart.FullName).VersionInfo
+          Write-Host "File version : $($versionInfo.FileVersion)"
+          Write-Host "Product ver. : $($versionInfo.ProductVersion)"
+ 
+            
+
  
       - name: Install APTRA Advance NDC
         shell: pwsh
