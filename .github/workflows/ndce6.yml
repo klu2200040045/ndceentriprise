@@ -21,7 +21,7 @@ jobs:
     name: NDCe Stack Deploy & Run Automation Tests
     # Use self-hosted runner for ATM stack installation (requires interactive desktop session)
     # Change to 'windows-latest' for GitHub-hosted runner (not recommended for APTRA installs)
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
  
     steps:
       - name: Checkout ndce-automation-tests
