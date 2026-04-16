@@ -118,25 +118,20 @@ jobs:
 
           Write-Host "XFS Simulator installed (exit code: $($proc.ExitCode))"
 
-          Write-Host "=== Locating SIMSTART.exe ==="
-          $simStart = Get-ChildItem `
-            -Path "C:\" `
-            -Filter "SIMSTART.exe" `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+                 Write-Host "=============================================="
+                 Write-Host " Checking install directory: $($xfsInstallDir.FullName)"
+                 Write-Host "=============================================="
+                  Write-Host ""
 
-          if (-not $simStart) {
-            Write-Host "ERROR: SIMSTART.exe not found after installation"
-            exit 1
-          }
+                   Get-Item $xfsInstallDir.FullNa
 
-          Write-Host "SIMSTART.exe found:"
-          Write-Host "Path : $($simStart.FullName)"
-          Write-Host "Size : $([Math]::Round($simStart.Length / 1KB, 2)) KB"
-
-          $versionInfo = (Get-Item $simStart.FullName).VersionInfo
-          Write-Host "File version : $($versionInfo.FileVersion)"
-          Write-Host "Product ver. : $($versionInfo.ProductVersion)"
- 
-            
+             
+                       Write-Host "SIMSTART.exe found:"
+                       Write-Host "Path : $($simStart.FullName)"
+                       Write-Host "Size : $([Math]::Round($simStart.Length / 1KB, 2)) KB"
+             
+                       $versionInfo = (Get-Item $simStart.FullName).VersionInfo
+                       Write-Host "File version : $($versionInfo.FileVersion)"
+                       Write-Host "Product ver. : $($versionInfo.ProductVersion)"
+              
+                         
