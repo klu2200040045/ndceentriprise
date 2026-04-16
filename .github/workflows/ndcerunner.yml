@@ -1,9 +1,7 @@
 name: NDCe Windows Automation Setup
  
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+
   workflow_dispatch:
  
 env:
@@ -22,14 +20,17 @@ env:
 jobs:
   setup-and-test:
     name: NDCe Stack Deploy & Run Automation Tests
-    runs-on: windows-latest
+    # Use self-hosted runner for ATM stack installation (requires interactive desktop session)
+    # Change to 'windows-latest' for GitHub-hosted runner (not recommended for APTRA installs)
+    runs-on: [self-hosted, windows]
  
     steps:
       - name: Checkout ndce-automation-tests
         uses: actions/checkout@v4
         #with:
-          #repository: ncratleos-swt-banking/ndce-automation-tests
-         # ref: master
+        #  repository: ncratleos-swt-banking/ndce-automation-tests
+        
+          #ref: master
          # token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
  
       - name: Print deployment configuration
@@ -93,104 +94,57 @@ jobs:
             exit 1
           }
           Write-Host "XFS Simulator installed (exit code: $($proc.ExitCode))"
-      - name: Install APTRA Advance NDC (Console Step-by-Step Debug)
+ 
+      - name: Install APTRA Advance NDC
         shell: pwsh
         run: |
-          Write-Host "========================================="
-          Write-Host " STEP 1: APTRA Advance NDC INSTALL STARTED"
-          Write-Host " Version : $env:APTRA_ADVANCE_NDC_VERSION"
-          Write-Host " Time    : $(Get-Date)"
-          Write-Host "========================================="
-
-          # STEP 2: Enable MSI logging
-          Write-Host "STEP 2: Enabling Windows Installer verbose logging"
-          New-Item -Path "HKLM:\Software\Policies\Microsoft\Windows\Installer" -Force | Out-Null
-          Set-ItemProperty `
-            -Path "HKLM:\Software\Policies\Microsoft\Windows\Installer" `
-            -Name "Logging" `
-            -Value "voicewarmupx" `
-            -Type String
-          Write-Host "STEP 2: MSI logging enabled"
-
-          # STEP 3: Prepare directories
-          Write-Host "STEP 3: Preparing directories"
-          $baseDir = "C:\.ansible"
-          $pkgDir  = "$baseDir\Packages"
-          $extractPath = "$baseDir\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
-          New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
-          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-          Write-Host "STEP 3: Directories ready"
-
-          # STEP 4: Download package
-          Write-Host "STEP 4: Downloading Advance NDC package"
+          Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
           $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
-          $downloadPath = "$pkgDir\$nupkgFile"
-
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
-            -o $downloadPath `
-            "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Download failed"
-            exit 1
+          $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\$nupkgFile" $url
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Download failed"; exit 1 }
+          $fileSize = (Get-Item "C:\.ansible\Packages\$nupkgFile").Length
+          Write-Host "Downloaded file size: $fileSize bytes"
+          if ($fileSize -lt 1024) {
+            Write-Host "ERROR: File too small ($fileSize bytes):"; Get-Content "C:\.ansible\Packages\$nupkgFile"; exit 1
           }
-
-          Write-Host "STEP 4: Download complete (Size: $((Get-Item $downloadPath).Length) bytes)"
-
-          # STEP 5: Extract
-          Write-Host "STEP 5: Extracting archive"
-          Expand-Archive -Path $downloadPath -DestinationPath $extractPath -Force
-          Write-Host "STEP 5: Extraction complete"
-
-          if (-not (Test-Path "$extractPath\setup.exe")) {
-            Write-Host "ERROR: setup.exe not found"
-            exit 1
+          Write-Host "=== Extracting Advance NDC ==="
+          $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+          Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath $extractPath -Force
+          Write-Host "=== Extracted contents ==="
+          Get-ChildItem -Path $extractPath -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+          Write-Host "=== Installing Advance NDC (setup.exe /t:sst /u:silent) ==="
+          Write-Host "Extract path: $extractPath"
+          Write-Host "Setup.exe exists: $(Test-Path "$extractPath\setup.exe")"
+          Write-Host "Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+          $proc = Start-Process -FilePath "$extractPath\setup.exe" -ArgumentList "/t:sst /u:silent" -Wait -PassThru -RedirectStandardOutput "$extractPath\setup-stdout.log" -RedirectStandardError "$extractPath\setup-stderr.log"
+          Write-Host "End time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+          Write-Host "Exit code: $($proc.ExitCode)"
+          # Print setup logs if available
+          if (Test-Path "$extractPath\setup-stdout.log") {
+            Write-Host "=== setup stdout ==="
+            Get-Content "$extractPath\setup-stdout.log"
           }
-
-          # STEP 6: Start installer
-          Write-Host "STEP 6: Starting APTRA setup.exe"
-          $startTime = Get-Date
-          $proc = Start-Process `
-            -FilePath "$extractPath\setup.exe" `
-            -ArgumentList "/t:sst /u:silent" `
-            -PassThru
-
-          # STEP 7: LIVE progress logs (THIS IS THE KEY)
-          Write-Host "STEP 7: Monitoring installation progress"
-          while (-not $proc.HasExited) {
-
-            $elapsed = New-TimeSpan -Start $startTime -End (Get-Date)
-
-            Write-Host "-----------------------------------------"
-            Write-Host "APTRA INSTALL IN PROGRESS"
-            Write-Host "Elapsed Time : $($elapsed.Hours)h $($elapsed.Minutes)m"
-            Write-Host "Current Time : $(Get-Date)"
-            Write-Host "Running installer processes:"
-
-            Get-Process | Where-Object {
-              $_.Name -match 'msi|setup|aptra'
-            } | Select-Object Name, CPU |
-              Format-Table -AutoSize
-
-            if (Get-ItemProperty `
-                -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
-                -Name PendingFileRenameOperations `
-                -ErrorAction SilentlyContinue) {
-              Write-Host "⚠️ Installer waiting on pending reboot"
-            }
-
-            Start-Sleep -Seconds 120
+          if (Test-Path "$extractPath\setup-stderr.log") {
+            Write-Host "=== setup stderr ==="
+            Get-Content "$extractPath\setup-stderr.log"
           }
-
-          $proc.Refresh()
-
-          # STEP 8: Finish
-          Write-Host "========================================="
-          Write-Host "STEP 8: INSTALLER FINISHED"
-          Write-Host "Exit Code  : $($proc.ExitCode)"
-          Write-Host "End Time  : $(Get-Date)"
-          Write-Host "========================================="
-
+          # Check for MSI logs in temp
+          $msiLogs = Get-ChildItem -Path $env:TEMP -Filter "MSI*.LOG" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3
+          foreach ($log in $msiLogs) {
+            Write-Host "=== MSI Log: $($log.Name) (last 100 lines) ==="
+            Get-Content $log.FullName -Tail 100
+          }
+          # Check Windows Event Log for installer errors
+          Write-Host "=== Recent MsiInstaller events ==="
+          Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='MsiInstaller'; StartTime=(Get-Date).AddMinutes(-30)} -MaxEvents 10 -ErrorAction SilentlyContinue | Format-List TimeCreated, Message
+          $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
+          if ($proc.ExitCode -notin $validCodes) {
+            Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"; exit 1
+          }
+          Write-Host "Advance NDC installed successfully (exit code: $($proc.ExitCode))"
+ 
       - name: Apply APTRA Advance NDC Patches
         if: env.APTRA_ADVANCE_NDC_PATCH_BRANCH != ''
         shell: pwsh
@@ -590,4 +544,3 @@ jobs:
         with:
           name: allure-html-report
           path: results/allure-report/
- 
