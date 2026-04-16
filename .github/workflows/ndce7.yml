@@ -61,77 +61,80 @@ jobs:
           choco install 7zip -y --no-progress
           New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages" | Out-Null
  
-      # -----------------------------------------------------------
-      # 1. Install NDCe Stack Components
-      # -----------------------------------------------------------
- 
-      - name: Install XFS Simulator
+      - name: Install APTRA Advance NDC
         shell: pwsh
         run: |
-          Write-Host "=== Downloading XFS Simulator $env:XFS_SIMULATOR_VERSION ==="
+          ite-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
+          upkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+          ownloadPath = "C:\.ansible\Packages\$nupkgFile"
+          xtractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+          rl = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
 
-          $packageDir = "C:\.ansible\Packages"
-          $installDir = "C:\.ansible\XFS Simulator"
-          $nupkgFile = "XFSSimulator.$env:XFS_SIMULATOR_VERSION.nupkg"
-          $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+          rl.exe --fail -L `
+          -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+          -o $downloadPath `
+          $url
 
-          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+           ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Download failed"; exit 1 }
 
-          curl.exe --fail -L `
-            -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
-            -o "$packageDir\$nupkgFile" `
-            $url
+          ite-Host "Downloaded package path:"
+          ite-Host $downloadPath
 
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Download failed with exit code $LASTEXITCODE"
-            exit 1
-          }
+          ileSize = (Get-Item $downloadPath).Length
+          ite-Host "Downloaded file size: $fileSize bytes"
 
-          $fileSize = (Get-Item "$packageDir\$nupkgFile").Length
-          Write-Host "Downloaded file size: $fileSize bytes"
+           ($fileSize -lt 1024) {
+          Write-Host "ERROR: File too small"
+          exit 1
+          
 
-          if ($fileSize -lt 1024) {
-            Write-Host "ERROR: Downloaded file is too small — likely an error response"
-            Get-Content "$packageDir\$nupkgFile"
-            exit 1
-          }
+          ite-Host "=== Extracting Advance NDC ==="
+          w-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+          pand-Archive -Path $downloadPath -DestinationPath $extractPath -Force
 
-          Write-Host "=== Extracting XFS Simulator ==="
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-          Expand-Archive -Path "$packageDir\$nupkgFile" -DestinationPath $installDir -Force
+          ite-Host "Top-level extracted contents:"
+          t-ChildItem $extractPath |
+          Select-Object Name, Length, LastWriteTime |
+          Format-Table -AutoSize
 
-          Write-Host "=== Extracted top-level contents (XFS Simulator) ==="
-          Get-ChildItem -Path $installDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+          ite-Host "Locating setup.exe:"
+          etupExe = Join-Path $extractPath "setup.exe"
+          ite-Host "setup.exe path: $setupExe"
+          ite-Host "Exists: $(Test-Path $setupExe)"
 
-          Write-Host "=== Installing XFS Simulator (setup.exe /t:devsim /u:silent) ==="
-          $proc = Start-Process `
-            -FilePath "$installDir\setup.exe" `
-            -ArgumentList "/t:devsim /u:silent" `
-            -Wait `
-            -PassThru
+          ite-Host "=== Installing Advance NDC ==="
+          roc = Start-Process `
+          -FilePath $setupExe `
+          -ArgumentList "/t:sst /u:silent" `
+          -Wait `
+          -PassThru
 
-          $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
-          if ($proc.ExitCode -notin $validCodes) {
-            Write-Host "ERROR: XFS Simulator install failed with exit code $($proc.ExitCode)"
-            exit 1
-          }
+          alidCodes = @(0,1073741825,1073741826,1073741830,3010,1641)
+           ($proc.ExitCode -notin $validCodes) {
+          Write-Host "ERROR: Advance NDC install failed"
+          exit 1
+          
 
-          Write-Host "XFS Simulator installed (exit code: $($proc.ExitCode))"
+          ite-Host "Advance NDC installed successfully"
 
-                 Write-Host "=============================================="
-                 Write-Host " Checking install directory: $($xfsInstallDir.FullName)"
-                 Write-Host "=============================================="
-                  Write-Host ""
+          ite-Host "=== Locating one Advance NDC executable ==="
+          ndcExe = Get-ChildItem `
+          -Path "C:\" `
+          -Filter "*.exe" `
+          -Recurse `
+          -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match "andc|ndc|advance" } |
+          Select-Object -First 1
 
-                   Get-Item $xfsInstallDir.FullNa
+           (-not $andcExe) {
+          Write-Host "ERROR: No Advance NDC exe found"
+          exit 1
+          
 
-             
-                       Write-Host "SIMSTART.exe found:"
-                       Write-Host "Path : $($simStart.FullName)"
-                       Write-Host "Size : $([Math]::Round($simStart.Length / 1KB, 2)) KB"
-             
-                       $versionInfo = (Get-Item $simStart.FullName).VersionInfo
-                       Write-Host "File version : $($versionInfo.FileVersion)"
-                       Write-Host "Product ver. : $($versionInfo.ProductVersion)"
-              
-                         
+          ite-Host "Advance NDC exe found:"
+          ite-Host "Path : $($andcExe.FullName)"
+          ite-Host "Size : $([Math]::Round($andcExe.Length / 1KB, 2)) KB"
+
+          er = (Get-Item $andcExe.FullName).VersionInfo
+          ite-Host "File version : $($ver.FileVersion)"
+          ite-Host "Product ver. : $($ver.ProductVersion)"
