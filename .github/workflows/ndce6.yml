@@ -26,6 +26,7 @@ jobs:
     steps:
       - name: Checkout ndce-automation-tests
         uses: actions/checkout@v4
+      
       - name: Print deployment configuration
         shell: pwsh
         run: |
@@ -115,26 +116,88 @@ jobs:
         shell: pwsh
         run: |
           $extractPath = "$env:RUNNER_TEMP\ndce-install\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
-          Write-Host "=== Installing Advance NDC silently ==="
-          Write-Host "Extract path: $extractPath"
-          Write-Host "Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
           $setupExe = Join-Path $extractPath "setup.exe"
           if (-not (Test-Path $setupExe)) {
             Write-Host "ERROR: setup.exe not found at $setupExe"; exit 1
           }
-          # Run setup.exe directly via call operator (synchronous, no Start-Process)
+ 
+          # --- Pre-checks ---
+          Write-Host "=== Pre-installation diagnostics ==="
+          Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          Write-Host "Free disk: $([math]::Round((Get-PSDrive C).Free / 1GB, 2)) GB"
+          Write-Host "Running as: $env:USERNAME"
+          Write-Host "Is Admin: $([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+ 
+          # Check .NET Framework versions
+          Write-Host "=== .NET Framework versions ==="
+          Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP' -Recurse |
+            Get-ItemProperty -Name Version, Release -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -match '^(?!S)\p{L}'} |
+            Select-Object PSChildName, Version, Release | Format-Table -AutoSize
+ 
+          # Check if XFS Simulator is installed
+          Write-Host "=== Installed products (NCR/APTRA) ==="
+          Get-CimInstance Win32_Product | Where-Object { $_.Name -match 'NCR|APTRA|XFS' } | Select-Object Name, Version | Format-Table -AutoSize
+ 
+          # Check for pending reboot (XFS installer may require one)
+          Write-Host "=== Pending reboot check ==="
+          $pendingReboot = (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") -or
+                           (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")
+          Write-Host "Pending reboot: $pendingReboot"
+ 
+          # Enable global MSI verbose logging
+          Write-Host "=== Enabling MSI verbose logging ==="
+          New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer" -Force | Out-Null
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer" -Name "Logging" -Value "voicewarmupx" -Type String
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer" -Name "Debug" -Value 7 -Type DWord
+ 
+          # List contents of extract path for verification
+          Write-Host "=== Extract directory contents (top-level) ==="
+          Get-ChildItem -Path $extractPath | Format-Table Name, Length -AutoSize
+ 
+          Write-Host "=== Installing Advance NDC ==="
+          Write-Host "Command: $setupExe /t:sst /u:silent"
+          Write-Host "Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+ 
           & $setupExe /t:sst /u:silent
           $exitCode = $LASTEXITCODE
+ 
           Write-Host "End time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
           Write-Host "Exit code: $exitCode"
+ 
+          # --- Post-install diagnostics ---
+          # Check MSI logs in TEMP
+          Write-Host "=== MSI logs in TEMP ==="
+          $msiLogs = Get-ChildItem -Path $env:TEMP -Filter "MSI*.LOG" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+          if ($msiLogs) {
+            foreach ($log in $msiLogs) {
+              Write-Host "--- $($log.Name) ($($log.Length) bytes, $($log.LastWriteTime)) ---"
+              Get-Content $log.FullName -Tail 150
+            }
+          } else {
+            Write-Host "No MSI logs found in $env:TEMP"
+          }
+ 
+          # Check any log files created in the extract path
+          Write-Host "=== Log files in extract path ==="
+          Get-ChildItem -Path $extractPath -Filter "*.log" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "--- $($_.FullName) ---"
+            Get-Content $_.FullName -Tail 100
+          }
+ 
+          # Check Windows Event Log
+          Write-Host "=== Recent Application events (last 10 min) ==="
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 20 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'NCR|APTRA|setup|install|msi|error' } |
+            Format-List TimeCreated, ProviderName, Message
+ 
+          # Check Setup event log
+          Write-Host "=== Recent Setup events ==="
+          Get-WinEvent -LogName 'Setup' -MaxEvents 10 -ErrorAction SilentlyContinue | Format-List TimeCreated, Message
+ 
           $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
           if ($exitCode -notin $validCodes) {
             Write-Host "ERROR: Advance NDC install failed with exit code $exitCode"
-            # Dump MSI logs for debugging
-            Get-ChildItem -Path $env:TEMP -Filter "MSI*.LOG" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
-              Write-Host "=== MSI Log: $($_.Name) (last 100 lines) ==="
-              Get-Content $_.FullName -Tail 100
-            }
             exit 1
           }
           Write-Host "Advance NDC installed successfully"
