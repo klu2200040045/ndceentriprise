@@ -1,7 +1,7 @@
 name: NDCe Windows Automation Setup
  
 on:
-  push:
+
   workflow_dispatch:
  
 env:
@@ -25,6 +25,7 @@ jobs:
     steps:
       - name: Checkout ndce-automation-tests
         uses: actions/checkout@v4
+      
  
       - name: Print deployment configuration
         shell: pwsh
@@ -87,219 +88,88 @@ jobs:
             exit 1
           }
           Write-Host "XFS Simulator installed (exit code: $($proc.ExitCode))"
- 
-   
-      - name: Install APTRA Advance NDC
+      - name: Install APTRA Advance NDC (with live logs)
         shell: pwsh
         run: |
-          Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
+         $ErrorActionPreference = "Stop"
 
-          $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
-          $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+         $logRoot = "C:\.ansible\Logs"
+         New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
-          curl.exe --fail -L `
-            -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
-            -o "C:\.ansible\Packages\$nupkgFile" $url
+         $timeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+         $transcriptLog = "$logRoot\AdvanceNDC_Transcript_$timeStamp.log"
+         $installerLog  = "$logRoot\AdvanceNDC_Installer_$timeStamp.log"
 
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+         Write-Host "==========================================="
+         Write-Host " APTRA Advance NDC Installation Starting"
+         Write-Host " Logs Directory : $logRoot"
+         Write-Host " Transcript Log : $transcriptLog"
+         Write-Host " Installer Log  : $installerLog"
+         Write-Host "==========================================="
 
-          $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
-          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-          Expand-Archive "C:\.ansible\Packages\$nupkgFile" $extractPath -Force
+         # Start full PowerShell logging
+         Start-Transcript -Path $transcriptLog -Append | Out-Null
 
-          New-Item -ItemType Directory -Force -Path "C:\temp" | Out-Null
-          $logFile = "C:\temp\AdvanceNDC-install.log"
+         Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
 
-          Write-Host "=== Installing APTRA Advance NDC ==="
+         $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+         $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+         $pkgPath = "C:\.ansible\Packages\$nupkgFile"
 
-          $proc = Start-Process `
-            -FilePath "$extractPath\setup.exe" `
-            -ArgumentList "/t:sst /u:silent REBOOT=ReallySuppress /l*v `"$logFile`"" `
-            -PassThru
+         curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+           -o $pkgPath $url
 
-          while (-not $proc.HasExited) {
-            Write-Host "[APTRA] Installer running..."
-            Start-Sleep -Seconds 10
-          }
+         $fileSize = (Get-Item $pkgPath).Length
+         Write-Host "Downloaded package size: $fileSize bytes"
 
-          Get-Content $logFile -Tail 100
+         if ($fileSize -lt 1024) {
+           Write-Error "Downloaded file is too small. Possibly auth or repo issue."
+           Stop-Transcript
+           exit 1
+         }
 
-          if ($proc.ExitCode -notin @(0,3010,1641)) { exit 1 }
+         Write-Host "=== Extracting Advance NDC ==="
 
-          # -------------------------------
-          # INSTALL VERIFICATION (MANDATORY)
-          # -------------------------------
-          Write-Host "=== Verifying APTRA Advance NDC Installation ==="
+         $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+         New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
 
-          $installDir = "C:\Program Files (x86)\NCR APTRA\Advance NDC"
+         Expand-Archive -Path $pkgPath -DestinationPath $extractPath -Force
 
-          if (-not (Test-Path $installDir)) {
-            Write-Error "APTRA Advance NDC installation directory NOT FOUND"
-            exit 1
-          }
+         Write-Host "=== Starting Advance NDC Silent Installation ==="
+         Write-Host "This step may take several minutes..."
+         Write-Host "Live installer logs will appear below."
 
-          Write-Host "[OK] Installation directory exists:"
-          Get-ChildItem $installDir -Directory | Format-Table Name
+         # Start live log streaming (background)
+         $logJob = Start-Job -ScriptBlock {
+           param($logFile)
+           while (-not (Test-Path $logFile)) {
+             Start-Sleep -Seconds 2
+           }
+           Get-Content $logFile -Wait
+         } -ArgumentList $installerLog
 
-          $regPath = "HKLM:\SOFTWARE\WOW6432Node\NCR\Advance NDC"
-          if (-not (Test-Path $regPath)) {
-            Write-Error "APTRA Advance NDC registry key NOT FOUND"
-            exit 1
-          }
+         # Start installer
+         $proc = Start-Process `
+           -FilePath "$extractPath\setup.exe" `
+           -ArgumentList "/t:sst /u:silent /log `"$installerLog`"" `
+           -Wait `
+           -PassThru
 
-          Write-Host "[OK] Registry key found"
-          Write-Host "APTRA Advance NDC installation VERIFIED"
+         # Stop log tailing
+         Stop-Job $logJob -Force | Out-Null
+         Receive-Job $logJob | Out-Null
+         Remove-Job $logJob | Out-Null
 
-      - name: Apply APTRA Advance NDC Patches
-        if: env.APTRA_ADVANCE_NDC_PATCH_BRANCH != ''
-        shell: pwsh
-        run: |
-          Write-Host "=== Applying APTRA Advance NDC Patches (branch: $env:APTRA_ADVANCE_NDC_PATCH_BRANCH) ==="
-          $ver = $env:APTRA_ADVANCE_NDC_VERSION
-          $branch = $env:APTRA_ADVANCE_NDC_PATCH_BRANCH
-          # Map version to JFrog patch URLs
-          $patchUrls = @{
-            "5.1.0" = @{
-              "customer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0301XX_Custver/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0301XX_Custver/"
-              )
-              "developer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0301XX_DevBranch/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0301XX_DevBranch/"
-              )
-            }
-            "5.2.0" = @{
-              "customer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0302XX_Custver/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0302XX_Custver/"
-              )
-              "developer" = @(
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDCASM_0302XX_DevBranch/",
-                "https://ncratleos.jfrog.io/artifactory/andc-generic-releases/ANDC_0302XX_DevBranch/"
-              )
-            }
-          }
-          if (-not $patchUrls.ContainsKey($ver)) {
-            Write-Host "ERROR: No patch URLs configured for ANDC version $ver"; exit 1
-          }
-          if (-not $patchUrls[$ver].ContainsKey($branch)) {
-            Write-Host "ERROR: Unknown branch '$branch'. Use 'customer' or 'developer'"; exit 1
-          }
-          $urls = $patchUrls[$ver][$branch]
-          New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages\.Net" | Out-Null
-          New-Item -ItemType Directory -Force -Path "C:\.ansible\Packages\CPP" | Out-Null
-          $patchBase = "C:\.ansible\Advance NDC $ver Patches"
-          New-Item -ItemType Directory -Force -Path "$patchBase\.Net $branch build" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$patchBase\CPP $branch build" | Out-Null
-          $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
- 
-          # Helper: get latest .zip from JFrog directory listing
-          function Get-LatestPatch($dirUrl) {
-            $resp = curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -s $dirUrl
-            $matches = [regex]::Matches($resp, '<a href="([^"]+\.zip)">')
-            if ($matches.Count -eq 0) { Write-Host "ERROR: No patches found at $dirUrl"; exit 1 }
-            return $matches[$matches.Count - 1].Groups[1].Value
-          }
- 
-          # .Net patch
-          $dotNetPatch = Get-LatestPatch $urls[0]
-          Write-Host "Latest .Net patch: $dotNetPatch"
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\.Net\$dotNetPatch" "$($urls[0])$dotNetPatch"
-          Expand-Archive -Path "C:\.ansible\Packages\.Net\$dotNetPatch" -DestinationPath "$patchBase\.Net $branch build" -Force
-          $msi = Get-ChildItem -Path "$patchBase\.Net $branch build" -Recurse -Filter "ANDCASMPatch.msi" | Select-Object -First 1
-          if ($msi) {
-            $proc = Start-Process msiexec.exe -ArgumentList "/i `"$($msi.FullName)`" TARGETTYPE=`"Runtime`" REINSTALLMODE=amus ARPSYSTEMCOMPONENT=1 REBOOT=Suppress TARGETDIR=`"C:\Program Files\NCR APTRA\Advance NDC`" CONFIGURATIONSET=`"<CONFIGSET>`" /quiet" -Wait -PassThru
-            if ($proc.ExitCode -notin $validCodes) { Write-Host "ERROR: .Net patch install failed ($($proc.ExitCode))"; exit 1 }
-            Write-Host ".Net patch installed (exit code: $($proc.ExitCode))"
-          }
- 
-          # CPP patch
-          $cppPatch = Get-LatestPatch $urls[1]
-          Write-Host "Latest CPP patch: $cppPatch"
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\CPP\$cppPatch" "$($urls[1])$cppPatch"
-          Expand-Archive -Path "C:\.ansible\Packages\CPP\$cppPatch" -DestinationPath "$patchBase\CPP $branch build" -Force
-          $msi = Get-ChildItem -Path "$patchBase\CPP $branch build" -Recurse -Filter "ANDCPatch.msi" | Select-Object -First 1
-          if ($msi) {
-            $proc = Start-Process msiexec.exe -ArgumentList "/i `"$($msi.FullName)`" TARGETTYPE=`"RuntimeSST`" REINSTALLMODE=amus ARPSYSTEMCOMPONENT=1 REBOOT=Suppress INSTALLDIR=`"C:\Program Files\NCR APTRA\Advance NDC`" CONFIGURATIONSET=`"<CONFIGSET>`" ALLUSERS=2 /quiet" -Wait -PassThru
-            if ($proc.ExitCode -notin $validCodes) { Write-Host "ERROR: CPP patch install failed ($($proc.ExitCode))"; exit 1 }
-            Write-Host "CPP patch installed (exit code: $($proc.ExitCode))"
-          }
- 
-          # Copy UpdatedConfig files to Config
-          $updatedConfig = "C:\Program Files (x86)\NCR APTRA\Advance NDC\UpdatedConfig"
-          $configDir = "C:\Program Files (x86)\NCR APTRA\Advance NDC\Config"
-          if (Test-Path $updatedConfig) {
-            Get-ChildItem -Path $updatedConfig -Recurse -File | Where-Object { $_.Extension -ne '.png' -and $_.Name -ne 'USERFUNS.SCR' } | ForEach-Object {
-              Copy-Item $_.FullName -Destination $configDir -Force -ErrorAction SilentlyContinue
-            }
-            $userfuns = Join-Path $updatedConfig "USERFUNS.SCR"
-            if (Test-Path $userfuns) {
-              Copy-Item $userfuns -Destination "C:\Program Files (x86)\NCR APTRA\Advance NDC\USERFUNS.SCR" -Force
-            }
-          }
-          Write-Host "APTRA Advance NDC Patches applied successfully"
- 
-      - name: Install EMV
-        shell: pwsh
-        run: |
-          Write-Host "=== Downloading EMV $env:EMV_VERSION ==="
-          $nupkgFile = "EMVAdvanceNDC.$env:EMV_VERSION.nupkg"
-          $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\$nupkgFile" $url
-          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Download failed"; exit 1 }
-          $fileSize = (Get-Item "C:\.ansible\Packages\$nupkgFile").Length
-          if ($fileSize -lt 1024) {
-            Write-Host "ERROR: File too small ($fileSize bytes):"; Get-Content "C:\.ansible\Packages\$nupkgFile"; exit 1
-          }
-          $extractPath = "C:\.ansible\EMV-CAM2 Exits for Advance NDC $env:EMV_VERSION"
-          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-          Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath $extractPath -Force
-          Write-Host "=== Installing EMV via msiexec ==="
-          $proc = Start-Process msiexec.exe -ArgumentList "/i `"$extractPath\EMVExMV.msi`" /qn /norestart /lv `"$extractPath\install.log`" ARPSYSTEMCOMPONENT=1 TARGETTYPE=`"RuntimeSST`" ALLUSERS=2" -Wait -PassThru
-          if ($proc.ExitCode -ne 0) {
-            Write-Host "ERROR: EMV install failed with exit code $($proc.ExitCode)"
-            if (Test-Path "$extractPath\install.log") { Get-Content "$extractPath\install.log" -Tail 50 }
-            exit 1
-          }
-          Write-Host "EMV installed (exit code: $($proc.ExitCode))"
- 
-      - name: Install NDC Enterprise
-        shell: pwsh
-        run: |
-          Write-Host "=== Downloading NDC Enterprise $env:NDC_ENTERPRISE_VERSION ==="
-          $ver = $env:NDC_ENTERPRISE_VERSION
-          # Determine download URL based on version pattern
-          # Released .cab versions: e.g. "02.05.00", "02.08.00"
-          # Snapshot .zip versions: e.g. "andc52x-2.10.0-M01"
-          # RC .zip versions: e.g. "andc52x-2.8.1-RC1"
-          if ($ver -match '^andc(\d+x)-(.+)$') {
-            $andcVer = $Matches[1]
-            $numVer = $Matches[2]
-            if ($numVer -match 'RC') {
-              $url = "https://ncratleos.jfrog.io/artifactory/ndce-maven-releases/com/ncr/ndce/terminal/ndce-sst-aggregate-for-andc$%7BandcVer%7D/$%7BnumVer%7D/ndce-sst-aggregate-for-andc$%7BandcVer%7D-$%7BnumVer%7D.zip%22
-              $fileName = "ndce-sst-aggregate-for-andc${andcVer}-${numVer}.zip"
-            } else {
-              $url = "https://ncratleos.jfrog.io/artifactory/ndce-maven-snapshots/com/ncr/ndce/terminal/ndce-sst-aggregate-for-andc$%7BandcVer%7D/$%7BnumVer%7D-SNAPSHOT/ndce-sst-aggregate-for-andc$%7BandcVer%7D-$%7BnumVer%7D-SNAPSHOT.zip%22
-              $fileName = "ndce-sst-aggregate-for-andc${andcVer}-${numVer}-SNAPSHOT.zip"
-            }
-          } else {
-            # Released cab format (legacy): version like "02.07.00" defaults to andc-51x
-            $url = "https://ncratleos.jfrog.io/artifactory/atmclient-maven-releases/NDCEnterprise/Released/Aggregates/NDCEnterprise_SST_Runtime-andc-51x/$%7Bver%7D/NDCEnterprise_SST_Runtime-andc-51x-$%7Bver%7D.cab%22
-            $fileName = "NDCEnterprise_SST_Runtime-andc-51x-${ver}.cab"
-          }
-          Write-Host "Download URL: $url"
-          curl.exe --fail -L -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" -o "C:\.ansible\Packages\$fileName" $url
-          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Download failed"; exit 1 }
-          $fileSize = (Get-Item "C:\.ansible\Packages\$fileName").Length
-          if ($fileSize -lt 1024) {
-            Write-Host "ERROR: File too small ($fileSize bytes):"; Get-Content "C:\.ansible\Packages\$fileName"; exit 1
-          }
-          $extractPath = "C:\.ansible\NDC Enterprise $ver"
-          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-          if ($fileName -match '\.cab$') {
-            & expand "C:\.ansible\Packages\$fileName" -F:* $extractPath
-          } else {
-            Expand-Archive -Path "C:\.ansible\Packages\$fileName" -DestinationPath $extractPath -Force
-          }
+         Write-Host "=== Installation Finished ==="
+         Write-Host "Exit Code : $($proc.ExitCode)"
 
+         $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
+         if ($proc.ExitCode -notin $validCodes) {
+           Write-Error "Advance NDC install failed with exit code $($proc.ExitCode)"
+           Stop-Transcript
+           exit 1
+         }
+
+         Write-Host "Advance NDC installed successfully."
+
+         Stop-Transcript
