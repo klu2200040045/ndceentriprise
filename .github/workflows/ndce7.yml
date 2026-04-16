@@ -101,15 +101,68 @@ jobs:
             Write-Host "ERROR: File too small ($fileSize bytes):"; Get-Content "C:\.ansible\Packages\$nupkgFile"; exit 1
           }
           Write-Host "=== Extracting and installing Advance NDC ==="
+
+          $logRoot = "C:\.ansible\Logs"
+          New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+          $ts = Get-Date -Format "yyyyMMdd_HHmmss"          
+
+          $andcTranscript = "$logRoot\AdvanceNDC_Install_Transcript_$ts.log"
+          Start-Transcript -Path $andcTranscript -Append | Out-Null          
+
           $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
-          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-          Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath $extractPath -Force
-          $proc = Start-Process -FilePath "$extractPath\setup.exe" -ArgumentList "/t:sst /u:silent" -Wait -PassThru
+          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null          
+
+          Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath $extractPath -Force          
+
+          Write-Host "Advance NDC installer started at $(Get-Date)"
+          Write-Host "Live progress will be shown below..."
+          Write-Host "--------------------------------------------------"          
+
+          # Start installer WITHOUT -Wait so we can monitor it
+          $proc = Start-Process `
+            -FilePath "$extractPath\setup.exe" `
+            -ArgumentList "/t:sst /u:silent" `
+            -PassThru          
+
+          # LIVE MONITORING LOOP
+          while (-not $proc.HasExited) {          
+
+            $p = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue          
+
+            if ($p) {
+              Write-Host ("[{0}] Advance NDC installing | CPU: {1:N1} | RAM: {2:N1} MB" -f `
+                (Get-Date -Format HH:mm:ss),
+                $p.CPU,
+                ($p.WorkingSet64 / 1MB))
+            } else {
+              Write-Host ("[{0}] Installer process initializing..." -f `
+                (Get-Date -Format HH:mm:ss))
+            }          
+
+            # Show real file activity proof
+            if (Test-Path "C:\Program Files (x86)\NCR APTRA") {
+              $recent = Get-ChildItem "C:\Program Files (x86)\NCR APTRA" -Recurse -ErrorAction SilentlyContinue |
+                        Sort-Object LastWriteTime -Descending |
+                        Select-Object -First 1
+              if ($recent) {
+                Write-Host ("    Last file updated: {0} at {1}" -f `
+                  $recent.FullName, $recent.LastWriteTime)
+              }
+            }          
+
+            Start-Sleep -Seconds 15
+          }          
+
+          $proc.WaitForExit()          
+
           $validCodes = @(0, 1073741825, 1073741826, 1073741830, 3010, 1641)
           if ($proc.ExitCode -notin $validCodes) {
             Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"
+            Stop-Transcript
             exit 1
-          }
-          Write-Host "Advance NDC installed (exit code: $($proc.ExitCode))"
-          ``
-     
+          }          
+
+          Write-Host "Advance NDC installed successfully (exit code: $($proc.ExitCode))"
+          Stop-Transcript          
+
+                         
