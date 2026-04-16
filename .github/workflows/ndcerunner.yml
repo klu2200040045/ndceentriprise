@@ -154,8 +154,130 @@ jobs:
           $versionInfo = (Get-Item $simStart.FullName).VersionInfo
           Write-Host "File version : $($versionInfo.FileVersion)"
           Write-Host "Product ver. : $($versionInfo.ProductVersion)"
- 
-            
-
- 
-     
+          
+      - name: Install APTRA Advance NDC
+        shell: pwsh
+        run: |
+          Write-Host "=== Downloading APTRA Advance NDC $env:APTRA_ADVANCE_NDC_VERSION ==="
+          $nupkgFile = "AdvanceNDC.$env:APTRA_ADVANCE_NDC_VERSION.nupkg"
+          $url = "https://ncratleos.jfrog.io/artifactory/atmclient-nuget-releases/$nupkgFile"
+      
+          curl.exe --fail -L `
+            -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_TOKEN }}" `
+            -o "C:\.ansible\Packages\$nupkgFile" `
+            $url
+      
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Download failed"
+            exit 1
+          }
+      
+          $fileSize = (Get-Item "C:\.ansible\Packages\$nupkgFile").Length
+          Write-Host "Downloaded file size: $fileSize bytes"
+      
+          if ($fileSize -lt 1024) {
+            Write-Host "ERROR: File too small ($fileSize bytes)"
+            Get-Content "C:\.ansible\Packages\$nupkgFile"
+            exit 1
+          }
+      
+          Write-Host "=== Extracting Advance NDC ==="
+          $extractPath = "C:\.ansible\Advance NDC $env:APTRA_ADVANCE_NDC_VERSION"
+          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+          Expand-Archive -Path "C:\.ansible\Packages\$nupkgFile" -DestinationPath $extractPath -Force
+      
+          Write-Host "=== Extracted contents ==="
+          Get-ChildItem -Path $extractPath -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+      
+          Write-Host "=== Installing Advance NDC (setup.exe /t:sst /u:silent) ==="
+          Write-Host "Extract path: $extractPath"
+          Write-Host "Setup.exe exists: $(Test-Path "$extractPath\setup.exe")"
+          Write-Host "Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+      
+          $proc = Start-Process `
+            -FilePath "$extractPath\setup.exe" `
+            -ArgumentList "/t:sst /u:silent" `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput "$extractPath\setup-stdout.log" `
+            -RedirectStandardError "$extractPath\setup-stderr.log"
+      
+          Write-Host "End time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+          Write-Host "Exit code: $($proc.ExitCode)"
+      
+          if (Test-Path "$extractPath\setup-stdout.log") {
+            Write-Host "=== setup stdout ==="
+            Get-Content "$extractPath\setup-stdout.log"
+          }
+      
+          if (Test-Path "$extractPath\setup-stderr.log") {
+            Write-Host "=== setup stderr ==="
+            Get-Content "$extractPath\setup-stderr.log"
+          }
+      
+          Write-Host "=== Recent MsiInstaller events ==="
+          Get-WinEvent `
+            -FilterHashtable @{ LogName='Application'; ProviderName='MsiInstaller'; StartTime=(Get-Date).AddMinutes(-30) } `
+            -MaxEvents 10 `
+            -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Message
+      
+          $validCodes = @(0,1073741825,1073741826,1073741830,3010,1641)
+          if ($proc.ExitCode -notin $validCodes) {
+            Write-Host "ERROR: Advance NDC install failed with exit code $($proc.ExitCode)"
+            exit 1
+          }
+      
+          Write-Host "Advance NDC installed successfully (exit code: $($proc.ExitCode))"
+      
+          # ============================================================
+          # DYNAMIC INSTALL DIRECTORY & EXE DISCOVERY (ADDED PART)
+          # ============================================================
+      
+          Write-Host "=============================================="
+          Write-Host " Dynamically discovering Advance NDC install location"
+          Write-Host "=============================================="
+      
+          # Find ANY Advance NDC executable dynamically
+          $andcExe = Get-ChildItem `
+            -Path "C:\" `
+            -Filter "*.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.Name -match "andc|ndc|Advance"
+            } |
+            Select-Object -First 1
+      
+          if (-not $andcExe) {
+            Write-Host "ERROR: No Advance NDC executable found after installation"
+            exit 1
+          }
+      
+          Write-Host "Advance NDC executable found:"
+          Write-Host "Path : $($andcExe.FullName)"
+          Write-Host "Size : $([Math]::Round($andcExe.Length / 1KB, 2)) KB"
+      
+          $ver = (Get-Item $andcExe.FullName).VersionInfo
+          Write-Host "File version : $($ver.FileVersion)"
+          Write-Host "Product ver. : $($ver.ProductVersion)"
+      
+          # Derive the installation directory dynamically
+          $andcInstallDir = $andcExe.Directory.Parent
+      
+          Write-Host "=============================================="
+          Write-Host " Checking install directory: $($andcInstallDir.FullName)"
+          Write-Host "=============================================="
+          Write-Host ""
+      
+          # Native PowerShell directory output
+          Get-Item $andcInstallDir.FullName
+      
+       
+                  
+      
+       
+           
+      
